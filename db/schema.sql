@@ -23,3 +23,17 @@ CREATE TABLE friends (
     friend_since BIGINT,
     PRIMARY KEY (user_id, friend_steam_id)
 );
+
+-- Groups table: stores group info
+CREATE TABLE groups (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    owner_id INTEGER REFERENCES users(id) -- user who created the group
+);
+
+-- Group members: links groups to users (many-to-many)
+CREATE TABLE group_members (
+    group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+);
