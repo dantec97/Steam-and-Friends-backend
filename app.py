@@ -117,15 +117,72 @@ def get_user_games(steam_id):
 
 @app.route("/api/users/<steam_id>/friends", methods=["GET"])
 def get_friends(steam_id):
-    steam_api_key = os.getenv("STEAM_API_KEY")
-    url = "http://api.steampowered.com/ISteamUser/GetFriendList/v1/"
-    params = {
-        "key": steam_api_key,
-        "steamid": steam_id,
-        "relationship": "friend"
-    }
-    response = requests.get(url, params=params)
-    return jsonify(response.json())
+    # Update friends info in your DB
+    update_friends_info(steam_id)
+
+    # Now get the friends from your DB (with names/avatars)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT f.friend_steam_id, u.display_name, u.avatar_url, f.friend_since
+        FROM friends f
+        LEFT JOIN users u ON f.friend_steam_id = u.steam_id
+        JOIN users owner ON f.user_id = owner.id
+        WHERE owner.steam_id = %s
+        ORDER BY f.friend_since DESC
+    """, (steam_id,))
+    friends = [
+        {
+            "steam_id": row[0],
+            "display_name": row[1],
+            "avatar_url": row[2],
+            "friend_since": row[3]
+        }
+        for row in cur.fetchall()
+    ]
+    cur.close()
+    conn.close()
+    return jsonify(friends)
+
+
+@app.route("/api/users/<steam_id>/friends_cached", methods=["GET"])
+def get_friends_cached(steam_id):
+    """Return friends from the local DB only, no Steam API call."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT f.friend_steam_id, u.display_name, u.avatar_url, f.friend_since
+        FROM friends f
+        LEFT JOIN users u ON f.friend_steam_id = u.steam_id
+        JOIN users owner ON f.user_id = owner.id
+        WHERE owner.steam_id = %s
+        ORDER BY f.friend_since DESC
+    """, (steam_id,))
+    friends = [
+        {
+            "steam_id": row[0],
+            "display_name": row[1],
+            "avatar_url": row[2],
+            "friend_since": row[3]
+        }
+        for row in cur.fetchall()
+    ]
+    cur.close()
+    conn.close()
+    return jsonify(friends)
+
+# @app.route("/api/users/<steam_id>/friends_list", methods=["GET"])
+# # this returns the friends list from the Steam API
+# def get_friends_list(steam_id):
+#     steam_api_key = os.getenv("STEAM_API_KEY")
+#     url = "http://api.steampowered.com/ISteamUser/GetFriendList/v1/"
+#     params = {
+#         "key": steam_api_key,
+#         "steamid": steam_id,
+#         "relationship": "friend"
+#     }
+#     response = requests.get(url, params=params)
+#     return jsonify(response.json())
 
 @app.route("/api/users/<steam_id>/summary", methods=["GET"])
 def get_player_summary(steam_id):
@@ -136,13 +193,14 @@ def get_player_summary(steam_id):
         "steamids": steam_id
     }
     response = requests.get(url, params=params)
+    if response.status_code == 429:
+        return jsonify({"error": "Steam is rate limiting us. Please try again later."}), 429
     try:
         data = response.json()
-        # The response is a dict with a "response" key containing "players" list
         players = data.get("response", {}).get("players", [])
         if not players:
             return jsonify({"error": "No player found"}), 404
-        return jsonify(players[0])  # Return the first (and only) player summary
+        return jsonify(players[0])
     except Exception as e:
         return jsonify({"error": "Failed to decode JSON", "details": response.text}), 500
     
@@ -377,8 +435,60 @@ def get_group_members(group_id):
     conn.close()
     return jsonify(members)
 
+def update_friends_info(steam_id):
+    steam_api_key = os.getenv("STEAM_API_KEY")
+    # 1. Get friend list
+    url = "http://api.steampowered.com/ISteamUser/GetFriendList/v1/"
+    params = {"key": steam_api_key, "steamid": steam_id, "relationship": "friend"}
+    response = requests.get(url, params=params)
+    friends = response.json().get("friendslist", {}).get("friends", [])
+    friend_ids = [f['steamid'] for f in friends]
+    if not friend_ids:
+        return
 
+    conn = get_db_connection()
+    cur = conn.cursor()
 
+    # Get the user_id for the owner
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    owner_row = cur.fetchone()
+    if not owner_row:
+        cur.close()
+        conn.close()
+        return
+    owner_id = owner_row[0]
+
+    # Insert or update friend relationships
+    for f in friends:
+        cur.execute("""
+            INSERT INTO friends (user_id, friend_steam_id, friend_since)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, friend_steam_id) DO UPDATE SET friend_since = EXCLUDED.friend_since
+        """, (owner_id, f['steamid'], f.get('friend_since')))
+
+    # 2. Get player summaries in batches of 100
+    for i in range(0, len(friend_ids), 100):
+        chunk = friend_ids[i:i+100]
+        url = "http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
+        params = {"key": steam_api_key, "steamids": ",".join(chunk)}
+        resp = requests.get(url, params=params)
+        if resp.status_code != 200:
+            print(f"Steam API error: {resp.status_code} {resp.text}")
+            continue  # or handle error as needed
+        try:
+            players = resp.json().get("response", {}).get("players", [])
+        except Exception as e:
+            print(f"Failed to parse JSON: {e}, response: {resp.text}")
+            continue
+        for player in players:
+            cur.execute("""
+                INSERT INTO users (steam_id, display_name, avatar_url)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (steam_id) DO UPDATE SET display_name = EXCLUDED.display_name, avatar_url = EXCLUDED.avatar_url
+            """, (player['steamid'], player['personaname'], player['avatarfull']))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 if __name__ == "__main__":
     app.run(debug=True, threaded=True)
