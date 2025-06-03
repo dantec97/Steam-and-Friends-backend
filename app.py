@@ -4,12 +4,18 @@ from flask_cors import CORS
 import psycopg2
 from dotenv import load_dotenv
 import requests
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "super-secret-key")  # Use a strong secret in production!
+jwt = JWTManager(app)
 
 def get_db_connection():
     return psycopg2.connect(
@@ -23,6 +29,66 @@ def get_db_connection():
 @app.route("/api/hello")
 def hello():
     return jsonify({"message": "Hello from Flask!"})
+
+
+@app.route("/api/signup", methods=["POST"])
+def signup():
+    data = request.get_json()
+    steam_id = data.get("steam_id")
+    account_display_name = data.get("account_display_name")
+    password = data.get("password")
+    if not steam_id or not account_display_name or not password:
+        return jsonify({"error": "steam_id, account_display_name, and password are required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+        user = cur.fetchone()
+        hashed_pw = generate_password_hash(password)
+        if user:
+            # Update existing user
+            cur.execute(
+                "UPDATE users SET password_hash = %s, account_display_name = %s WHERE steam_id = %s;",
+                (hashed_pw, account_display_name, steam_id)
+            )
+            user_id = user[0]
+        else:
+            # Insert new user
+            cur.execute(
+                "INSERT INTO users (steam_id, password_hash, account_display_name) VALUES (%s, %s, %s) RETURNING id;",
+                (steam_id, hashed_pw, account_display_name)
+            )
+            user_id = cur.fetchone()[0]
+        conn.commit()
+    except psycopg2.Error as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+    return jsonify({"id": user_id, "steam_id": steam_id, "account_display_name": account_display_name}), 201
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    account_display_name = data.get("account_display_name")
+    password = data.get("password")
+    if not account_display_name or not password:
+        return jsonify({"error": "account_display_name and password are required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, password_hash, steam_id FROM users WHERE account_display_name = %s;", (account_display_name,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not user or not check_password_hash(user[1], password):
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    access_token = create_access_token(identity={"user_id": user[0], "steam_id": user[2], "account_display_name": account_display_name})
+    return jsonify(access_token=access_token)
 
 # Example endpoint to test DB connection
 @app.route("/api/users")
@@ -38,8 +104,8 @@ def get_users():
     conn.close()
     return jsonify(users)
 
-if __name__ == "__main__":
-    app.run(debug=True)
+# if __name__ == "__main__":
+#     app.run(debug=True)
 
 
 @app.route("/api/users", methods=["POST"])
@@ -100,7 +166,7 @@ def get_user_games(steam_id):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT g.appid, g.name, g.image_url, ug.playtime_minutes
+        SELECT g.id, g.appid, g.name, g.image_url, ug.playtime_minutes
         FROM users u
         JOIN user_games ug ON u.id = ug.user_id
         JOIN games g ON ug.game_id = g.id
@@ -108,7 +174,13 @@ def get_user_games(steam_id):
         ORDER BY ug.playtime_minutes DESC
     """, (steam_id,))
     games = [
-        {"appid": row[0], "name": row[1], "image_url": row[2], "playtime_minutes": row[3]}
+        {
+            "id": row[0],           # <-- Add this line
+            "appid": row[1],
+            "name": row[2],
+            "image_url": row[3],
+            "playtime_minutes": row[4]
+        }
         for row in cur.fetchall()
     ]
     cur.close()
@@ -204,6 +276,25 @@ def get_player_summary(steam_id):
     except Exception as e:
         return jsonify({"error": "Failed to decode JSON", "details": response.text}), 500
     
+
+@app.route("/api/users/<steam_id>/summary_local", methods=["GET"])
+def get_player_summary_local(steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT display_name, avatar_url FROM users WHERE steam_id = %s;",
+        (steam_id,)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({
+        "display_name": row[0],
+        "avatar_url": row[1],
+        "steam_id": steam_id
+    })
 
 @app.route("/api/compare/<steam_id>/<friend_steam_id>", methods=["GET"])
 def compare_games(steam_id, friend_steam_id):
@@ -489,6 +580,48 @@ def update_friends_info(steam_id):
     conn.commit()
     cur.close()
     conn.close()
+
+@app.route("/api/users/<steam_id>/games/<int:game_id>/friends", methods=["GET"])
+def friends_who_own_game(steam_id, game_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Get user_id
+    cur.execute("SELECT id FROM users WHERE steam_id = %s", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+    user_id = user_row[0]
+    # Get friends' steam_ids
+    cur.execute("SELECT friend_steam_id FROM friends WHERE user_id = %s", (user_id,))
+    friend_ids = [row[0] for row in cur.fetchall()]
+    if not friend_ids:
+        cur.close()
+        conn.close()
+        return jsonify([])
+    # Get friends who own the game, including avatar_url and other info
+    cur.execute("""
+        SELECT u.display_name, u.steam_id, u.avatar_url, u.account_display_name, ug.playtime_minutes
+        FROM users u
+        JOIN user_games ug ON u.id = ug.user_id
+        WHERE u.steam_id = ANY(%s) AND ug.game_id = %s
+        ORDER BY ug.playtime_minutes DESC
+    """, (friend_ids, game_id))
+    friends = [
+        {
+            "display_name": row[0],
+            "steam_id": row[1],
+            "avatar_url": row[2],
+            "account_display_name": row[3],
+            "playtime_minutes": row[4]
+        }
+        for row in cur.fetchall()
+    ]
+    print("Friends who own game:", friends)
+    cur.close()
+    conn.close()
+    return jsonify(friends)
 
 if __name__ == "__main__":
     app.run(debug=True, threaded=True)
