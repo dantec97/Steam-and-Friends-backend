@@ -243,6 +243,8 @@ def get_friends_cached(steam_id):
     conn.close()
     return jsonify(friends)
 
+
+
 # @app.route("/api/users/<steam_id>/friends_list", methods=["GET"])
 # # this returns the friends list from the Steam API
 # def get_friends_list(steam_id):
@@ -325,6 +327,52 @@ def compare_games(steam_id, friend_steam_id):
     cur.close()
     conn.close()
     return jsonify(games)
+
+
+@app.route("/api/groups/<int:group_id>/picture", methods=["POST"])
+def update_group_picture(group_id):
+    data = request.get_json()
+    picture_url = data.get("picture_url")
+    if not picture_url:
+        return jsonify({"error": "picture_url required"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE groups SET picture_url = %s WHERE id = %s;", (picture_url, group_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"group_id": group_id, "picture_url": picture_url}), 200
+
+@app.route("/api/groups/<int:group_id>/members/<steam_id>", methods=["DELETE"])
+def remove_group_member(group_id, steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user = cur.fetchone()
+    if user:
+        cur.execute("DELETE FROM group_members WHERE group_id = %s AND user_id = %s;", (group_id, user[0]))
+        conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"removed": steam_id}), 200
+
+
+@app.route("/api/groups/<int:group_id>", methods=["GET"])
+def get_group(group_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, owner_id, picture_url FROM groups WHERE id = %s;", (group_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return jsonify({"error": "Group not found"}), 404
+    return jsonify({
+        "group_id": row[0],
+        "name": row[1],
+        "owner_id": row[2],
+        "picture_url": row[3]
+    })
 
 @app.route("/api/sync_group_games", methods=["POST"])
 # Endpoint to sync games for a group of friends, avoids numerous API calls by letting the user refine the group they play with. 
@@ -426,6 +474,8 @@ def create_group():
     conn.close()
     return jsonify({"group_id": group_id, "name": name}), 201
 
+
+
 @app.route("/api/groups/<int:group_id>/members", methods=["POST"])
 # ADD GROUP MEMBERS
 def add_group_members(group_id):
@@ -484,8 +534,35 @@ def get_group_shared_games(group_id):
     conn.close()
     return jsonify(games)
 
+# @app.route("/api/users/<steam_id>/groups", methods=["GET"])
+# #GET ALL GROUPS USER IS A MEMBER OF
+# def get_user_groups(steam_id):
+#     conn = get_db_connection()
+#     cur = conn.cursor()
+#     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+#     user = cur.fetchone()
+#     if not user:
+#         cur.close()
+#         conn.close()
+#         return jsonify({"error": "User not found"}), 404
+#     user_id = user[0]
+#     cur.execute("""
+#         SELECT g.id, g.name, g.owner_id
+#         FROM groups g
+#         JOIN group_members gm ON g.id = gm.group_id
+#         WHERE gm.user_id = %s
+#         ORDER BY g.name
+#     """, (user_id,))
+#     groups = [
+#         {"group_id": row[0], "name": row[1], "owner_id": row[2]}
+#         for row in cur.fetchall()
+#     ]
+#     cur.close()
+#     conn.close()
+#     return jsonify(groups)
+
 @app.route("/api/users/<steam_id>/groups", methods=["GET"])
-#GET ALL GROUPS
+# GET ALL GROUPS USER IS A MEMBER OF
 def get_user_groups(steam_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -497,31 +574,85 @@ def get_user_groups(steam_id):
         return jsonify({"error": "User not found"}), 404
     user_id = user[0]
     cur.execute("""
-        SELECT g.id, g.name, g.owner_id
+        SELECT g.id, g.name, g.owner_id, g.picture_url
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id
         WHERE gm.user_id = %s
         ORDER BY g.name
     """, (user_id,))
     groups = [
-        {"group_id": row[0], "name": row[1], "owner_id": row[2]}
+        {
+            "group_id": row[0],
+            "name": row[1],
+            "owner_id": row[2],
+            "picture_url": row[3]
+        }
         for row in cur.fetchall()
     ]
     cur.close()
     conn.close()
     return jsonify(groups)
 
+@app.route("/api/users/<steam_id>/groups_owned", methods=["GET"])
+#GET ALL GROUPS USER OWNS
+def get_groups_owned(steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user = cur.fetchone()
+    if not user:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+    user_id = user[0]
+    cur.execute("""
+        SELECT id, name, picture_url
+        FROM groups
+        WHERE owner_id = %s
+        ORDER BY name
+    """, (user_id,))
+    groups = [
+        {"group_id": row[0], "name": row[1], "picture_url": row[2]}
+        for row in cur.fetchall()
+    ]
+    cur.close()
+    conn.close()
+    return jsonify(groups)
+
+# @app.route("/api/groups/<int:group_id>/members", methods=["GET"])
+# def get_group_members(group_id):
+#     conn = get_db_connection()
+#     cur = conn.cursor()
+#     cur.execute("""
+#         SELECT u.steam_id, u.display_name
+#         FROM group_members gm
+#         JOIN users u ON gm.user_id = u.id
+#         WHERE gm.group_id = %s
+#     """, (group_id,))
+#     members = [{"steam_id": row[0], "display_name": row[1]} for row in cur.fetchall()]
+#     cur.close()
+#     conn.close()
+#     return jsonify(members)
+
 @app.route("/api/groups/<int:group_id>/members", methods=["GET"])
 def get_group_members(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT u.steam_id, u.display_name
+        SELECT u.id, u.steam_id, u.display_name, u.avatar_url
         FROM group_members gm
         JOIN users u ON gm.user_id = u.id
         WHERE gm.group_id = %s
     """, (group_id,))
-    members = [{"steam_id": row[0], "display_name": row[1]} for row in cur.fetchall()]
+    members = [
+        {
+            "user_id": row[0],
+            "steam_id": row[1],
+            "display_name": row[2],
+            "avatar_url": row[3]
+        }
+        for row in cur.fetchall()
+    ]
     cur.close()
     conn.close()
     return jsonify(members)

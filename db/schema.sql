@@ -20,6 +20,7 @@ CREATE TABLE user_games (
     playtime_minutes INTEGER,
     PRIMARY KEY (user_id, game_id)
 );
+
 CREATE TABLE friends (
     user_id INTEGER REFERENCES users(id),
     friend_steam_id VARCHAR(32),
@@ -31,7 +32,8 @@ CREATE TABLE friends (
 CREATE TABLE groups (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    owner_id INTEGER REFERENCES users(id) -- user who created the group
+    owner_id INTEGER REFERENCES users(id), -- user who created the group
+    picture_url TEXT
 );
 
 -- Group members: links groups to users (many-to-many)
