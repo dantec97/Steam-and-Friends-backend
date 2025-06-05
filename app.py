@@ -1,11 +1,16 @@
 import os
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, redirect, g, url_for
 from flask_cors import CORS
 import psycopg2
 from dotenv import load_dotenv
 import requests
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
+import re
+import urllib.parse
+import urllib.request
+import json
+import datetime
 
 
 
@@ -109,6 +114,7 @@ def get_users():
 
 
 @app.route("/api/users", methods=["POST"])
+@jwt_required()
 def add_user():
     data = request.get_json()
     steam_id = data.get("steam_id")
@@ -136,7 +142,11 @@ def add_user():
 
 
 @app.route("/api/users/<steam_id>/fetch_games", methods=["POST"])
+@jwt_required()
 def fetch_and_store_games(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     success, message = fetch_and_store_games_for_steam_id(steam_id)
     if not success:
         return jsonify({"error": message}), 404
@@ -162,7 +172,11 @@ def get_steam_raw(steam_id):
         return jsonify({"error": "Failed to decode JSON", "details": response.text}), 500
     
 @app.route("/api/users/<steam_id>/games", methods=["GET"])
+@jwt_required()
 def get_user_games(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -188,7 +202,11 @@ def get_user_games(steam_id):
     return jsonify(games)
 
 @app.route("/api/users/<steam_id>/friends", methods=["GET"])
+@jwt_required()
 def get_friends(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     # Update friends info in your DB
     update_friends_info(steam_id)
 
@@ -218,7 +236,11 @@ def get_friends(steam_id):
 
 
 @app.route("/api/users/<steam_id>/friends_cached", methods=["GET"])
+@jwt_required()
 def get_friends_cached(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     """Return friends from the local DB only, no Steam API call."""
     conn = get_db_connection()
     cur = conn.cursor()
@@ -280,7 +302,11 @@ def get_player_summary(steam_id):
     
 
 @app.route("/api/users/<steam_id>/summary_local", methods=["GET"])
+@jwt_required()
 def get_player_summary_local(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
@@ -330,6 +356,7 @@ def compare_games(steam_id, friend_steam_id):
 
 
 @app.route("/api/groups/<int:group_id>/picture", methods=["POST"])
+@jwt_required()
 def update_group_picture(group_id):
     data = request.get_json()
     picture_url = data.get("picture_url")
@@ -344,6 +371,7 @@ def update_group_picture(group_id):
     return jsonify({"group_id": group_id, "picture_url": picture_url}), 200
 
 @app.route("/api/groups/<int:group_id>/members/<steam_id>", methods=["DELETE"])
+@jwt_required()
 def remove_group_member(group_id, steam_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -358,6 +386,7 @@ def remove_group_member(group_id, steam_id):
 
 
 @app.route("/api/groups/<int:group_id>", methods=["GET"])
+@jwt_required()
 def get_group(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -375,12 +404,7 @@ def get_group(group_id):
     })
 
 @app.route("/api/sync_group_games", methods=["POST"])
-# Endpoint to sync games for a group of friends, avoids numerous API calls by letting the user refine the group they play with. 
-# call with:
-# POST /api/sync_group_games
-# {
-#   "steam_ids": ["friend_id1", "friend_id2", ...]
-# }
+@jwt_required()
 def sync_group_games():
     data = request.get_json()
     steam_ids = data.get("steam_ids")
@@ -448,6 +472,7 @@ def fetch_and_store_games_for_steam_id(steam_id):
 
 #***** group logic *****
 @app.route("/api/groups", methods=["POST"])
+@jwt_required()
 #CREATE GROUP
 def create_group():
     data = request.get_json()
@@ -477,6 +502,7 @@ def create_group():
 
 
 @app.route("/api/groups/<int:group_id>/members", methods=["POST"])
+@jwt_required()
 # ADD GROUP MEMBERS
 def add_group_members(group_id):
     data = request.get_json()
@@ -497,6 +523,7 @@ def add_group_members(group_id):
     return jsonify({"group_id": group_id, "added": steam_ids}), 200
 
 @app.route("/api/groups/<int:group_id>/shared_games", methods=["GET"])
+@jwt_required()
 def get_group_shared_games(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -566,8 +593,12 @@ def get_group_shared_games(group_id):
 #     return jsonify(groups)
 
 @app.route("/api/users/<steam_id>/groups", methods=["GET"])
+@jwt_required()
 # GET ALL GROUPS USER IS A MEMBER OF
 def get_user_groups(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
@@ -598,8 +629,12 @@ def get_user_groups(steam_id):
     return jsonify(groups)
 
 @app.route("/api/users/<steam_id>/groups_owned", methods=["GET"])
+@jwt_required()
 #GET ALL GROUPS USER OWNS
 def get_groups_owned(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
@@ -639,6 +674,7 @@ def get_groups_owned(steam_id):
 #     return jsonify(members)
 
 @app.route("/api/groups/<int:group_id>/members", methods=["GET"])
+@jwt_required()
 def get_group_members(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -717,7 +753,11 @@ def update_friends_info(steam_id):
     conn.close()
 
 @app.route("/api/users/<steam_id>/games/<int:game_id>/friends", methods=["GET"])
+@jwt_required()
 def friends_who_own_game(steam_id, game_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     # Get user_id
@@ -758,9 +798,122 @@ def friends_who_own_game(steam_id, game_id):
     conn.close()
     return jsonify(friends)
 
+# Steam OpenID config
+steam_openid_url = 'https://steamcommunity.com/openid/login'
+steam_id_re = re.compile(r'https://steamcommunity.com/openid/id/(\d+)$')
+
+def get_user_info(steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT display_name, avatar_url, last_steam_update FROM users WHERE steam_id = %s;", (steam_id,))
+    row = cur.fetchone()
+    now = datetime.datetime.utcnow()
+    # If we have user info and it's less than 24 hours old, use it
+    if row and row[2] and (now - row[2]).total_seconds() < 86400:
+        cur.close()
+        conn.close()
+        return {"personaname": row[0], "avatarfull": row[1]}
+    # Otherwise, fetch from Steam API
+    steam_api_key = os.getenv("STEAM_API_KEY")
+    options = {
+        'key': steam_api_key,
+        'steamids': steam_id
+    }
+    url = 'https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/'
+    response = requests.get(url, params=options)
+    if response.status_code == 429:
+        cur.close()
+        conn.close()
+        raise Exception("Steam is rate limiting us. Please try again later.")
+    response.raise_for_status()
+    data = response.json()
+    players = data['response']['players']
+    steam_data = players[0] if players else {"personaname": "", "avatarfull": ""}
+    # Update DB with new info and timestamp
+    cur.execute(
+        "UPDATE users SET display_name = %s, avatar_url = %s, last_steam_update = %s WHERE steam_id = %s;",
+        (steam_data.get('personaname', ''), steam_data.get('avatarfull', ''), now, steam_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return steam_data
+
+@app.route("/auth/steam")
+def steam_login():
+    params = {
+        'openid.ns': "http://specs.openid.net/auth/2.0",
+        'openid.identity': "http://specs.openid.net/auth/2.0/identifier_select",
+        'openid.claimed_id': "http://specs.openid.net/auth/2.0/identifier_select",
+        'openid.mode': 'checkid_setup',
+        'openid.return_to': 'http://127.0.0.1:5000/auth/steam/authorize',
+        'openid.realm': 'http://127.0.0.1:5000'
+    }
+    param_string = urllib.parse.urlencode(params)
+    auth_url = steam_openid_url + "?" + param_string
+    return redirect(auth_url)
+
+@app.route("/auth/steam/authorize")
+def steam_authorize():
+    openid_identity = request.args.get('openid.identity')
+    match = steam_id_re.match(openid_identity)
+    if not match:
+        return jsonify({"error": "Steam login failed"}), 400
+    steam_id = match.group(1)
+    steam_data = get_user_info(steam_id)
+    display_name = steam_data.get('personaname', '')
+    avatar_url = steam_data.get('avatarfull', '')
+
+    # Upsert user in your DB
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user = cur.fetchone()
+    if user:
+        cur.execute(
+            "UPDATE users SET display_name = %s, avatar_url = %s WHERE steam_id = %s;",
+            (display_name, avatar_url, steam_id)
+        )
+        user_id = user[0]
+    else:
+        cur.execute(
+            "INSERT INTO users (steam_id, display_name, avatar_url) VALUES (%s, %s, %s) RETURNING id;",
+            (steam_id, display_name, avatar_url)
+        )
+        user_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # Create JWT
+    access_token = create_access_token(
+    identity=steam_id,
+    additional_claims={
+        "user_id": user_id,
+        "display_name": display_name,
+        "avatar_url": avatar_url
+    }
+)
+
+    # Redirect to frontend with all info as query params
+    return redirect(
+        f"http://localhost:5173/steam-auth-success"
+        f"?steamid={steam_id}"
+        f"&display_name={display_name}"
+        f"&avatar_url={avatar_url}"
+        f"&token={access_token}"
+    )
+
+
+
 if __name__ == "__main__":
-    app.run(debug=True, threaded=True)
+    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+# if __name__ == "__main__":
+#     app.run(debug=True, threaded=True)
     # might need: flask run --with-threads
 
 
     # 76561198079997160 weezbud
+
+    #direct steam sign in link: http://127.0.0.1:5000/auth/steam
+    #steam success: http://localhost:5173/steam-auth-success?steamid=76561198846382485&display_name=dantec97&avatar_url=https://avatars.steamstatic.com/3f47c3634c822270cbccf23f4cb4fcf2272e23d1_full.jpg
