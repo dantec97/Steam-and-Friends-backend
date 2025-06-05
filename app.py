@@ -497,23 +497,27 @@ def add_group_members(group_id):
     return jsonify({"group_id": group_id, "added": steam_ids}), 200
 
 @app.route("/api/groups/<int:group_id>/shared_games", methods=["GET"])
-#GROUP COMMON GAMES, returns games owned by all members of the group in order of total playtime
 def get_group_shared_games(group_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    # Get all user_ids in the group
-    cur.execute("SELECT user_id FROM group_members WHERE group_id = %s;", (group_id,))
-    user_ids = [row[0] for row in cur.fetchall()]
+    # Get all user_ids and steam_ids in the group
+    cur.execute("SELECT u.id, u.steam_id FROM group_members gm JOIN users u ON gm.user_id = u.id WHERE gm.group_id = %s;", (group_id,))
+    user_rows = cur.fetchall()
+    user_ids = [row[0] for row in user_rows]
+    steam_ids = [row[1] for row in user_rows]
     if not user_ids:
         cur.close()
         conn.close()
         return jsonify({"error": "No members in group"}), 404
 
-    # Find games owned by all group members
+    # Find games owned by all group members and get playtime per member
     sql = """
-        SELECT g.appid, g.name, g.image_url, COUNT(ug.user_id) as owners, SUM(ug.playtime_minutes) as total_playtime
+        SELECT g.appid, g.name, g.image_url,
+               SUM(ug.playtime_minutes) as total_playtime,
+               json_object_agg(u.steam_id, ug.playtime_minutes) as playtimes
         FROM user_games ug
         JOIN games g ON ug.game_id = g.id
+        JOIN users u ON ug.user_id = u.id
         WHERE ug.user_id = ANY(%s)
         GROUP BY g.appid, g.name, g.image_url
         HAVING COUNT(ug.user_id) = %s
@@ -525,8 +529,8 @@ def get_group_shared_games(group_id):
             "appid": row[0],
             "name": row[1],
             "image_url": row[2],
-            "owners": row[3],
-            "total_playtime": row[4]
+            "total_playtime": row[3],
+            "playtimes": row[4]  # {steam_id: playtime_minutes, ...}
         }
         for row in cur.fetchall()
     ]
