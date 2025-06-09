@@ -952,6 +952,14 @@ def steam_authorize():
         f"&token={access_token}"
     )
 
+@app.errorhandler(400)
+@app.errorhandler(401)
+@app.errorhandler(403)
+@app.errorhandler(404)
+@app.errorhandler(500)
+def handle_error(e):
+    code = getattr(e, 'code', 500)
+    return jsonify({"error": str(e)}), code
 
 
 if __name__ == "__main__":
