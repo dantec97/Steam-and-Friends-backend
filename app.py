@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 import json
 import datetime
+from datetime import timedelta
 
 
 
@@ -20,6 +21,7 @@ app = Flask(__name__)
 CORS(app)
 
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "super-secret-key")  # Use a strong secret in production!
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 jwt = JWTManager(app)
 
 def get_db_connection():
@@ -81,7 +83,7 @@ def login():
     account_display_name = data.get("account_display_name")
     password = data.get("password")
     if not account_display_name or not password:
-        return jsonify({"error": "account_display_name and password are required"}), 400
+        return jsonify({"error": "Missing credentials"}), 400
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -92,8 +94,8 @@ def login():
     if not user or not check_password_hash(user[1], password):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    access_token = create_access_token(identity={"user_id": user[0], "steam_id": user[2], "account_display_name": account_display_name})
-    return jsonify(access_token=access_token)
+    access_token = create_access_token(identity=user[2])  # user[2] is steam_id
+    return jsonify(access_token=access_token, steam_id=user[2])
 
 # Example endpoint to test DB connection
 @app.route("/api/users")
@@ -176,7 +178,22 @@ def get_steam_raw(steam_id):
 def get_user_games(steam_id):
     identity = get_jwt_identity()
     if identity != steam_id:
-        return jsonify({"error": "Forbidden"}), 403
+        # Check if identity is a friend of steam_id
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+        user_row = cur.fetchone()
+        if not user_row:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        user_id = user_row[0]
+        cur.execute("SELECT 1 FROM friends WHERE user_id = %s AND friend_steam_id = %s;", (user_id, identity))
+        is_friend = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not is_friend:
+            return jsonify({"error": "Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -189,7 +206,7 @@ def get_user_games(steam_id):
     """, (steam_id,))
     games = [
         {
-            "id": row[0],           # <-- Add this line
+            "id": row[0],
             "appid": row[1],
             "name": row[2],
             "image_url": row[3],
@@ -204,9 +221,7 @@ def get_user_games(steam_id):
 @app.route("/api/users/<steam_id>/friends", methods=["GET"])
 @jwt_required()
 def get_friends(steam_id):
-    identity = get_jwt_identity()
-    if identity != steam_id:
-        return jsonify({"error": "Forbidden"}), 403
+    # Do NOT check identity here
     # Update friends info in your DB
     update_friends_info(steam_id)
 
@@ -306,7 +321,22 @@ def get_player_summary(steam_id):
 def get_player_summary_local(steam_id):
     identity = get_jwt_identity()
     if identity != steam_id:
-        return jsonify({"error": "Forbidden"}), 403
+        # Check if identity is a friend of steam_id
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+        user_row = cur.fetchone()
+        if not user_row:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        user_id = user_row[0]
+        cur.execute("SELECT 1 FROM friends WHERE user_id = %s AND friend_steam_id = %s;", (user_id, identity))
+        is_friend = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not is_friend:
+            return jsonify({"error": "YOURE NOT FRIENDS Forbidden"}), 403
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
@@ -440,7 +470,12 @@ def fetch_and_store_games_for_steam_id(steam_id):
         "format": "json"
     }
     response = requests.get(url, params=params)
-    data = response.json()
+    try:
+        data = response.json()
+    except Exception as e:
+        print(f"Failed to decode JSON for steam_id={steam_id}: {e}")
+        print(f"Response text: {response.text}")
+        return False, f"Steam API error or invalid response for {steam_id}"
     games = data.get("response", {}).get("games", [])
 
     conn = get_db_connection()
@@ -722,12 +757,21 @@ def update_friends_info(steam_id):
 
     # Insert or update friend relationships
     for f in friends:
+        # Insert owner -> friend
         cur.execute("""
             INSERT INTO friends (user_id, friend_steam_id, friend_since)
             VALUES (%s, %s, %s)
             ON CONFLICT (user_id, friend_steam_id) DO UPDATE SET friend_since = EXCLUDED.friend_since
         """, (owner_id, f['steamid'], f.get('friend_since')))
-
+        # Insert friend -> owner (symmetric)
+        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (f['steamid'],))
+        friend_row = cur.fetchone()
+        if friend_row:
+            cur.execute("""
+                INSERT INTO friends (user_id, friend_steam_id, friend_since)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, friend_steam_id) DO UPDATE SET friend_since = EXCLUDED.friend_since
+            """, (friend_row[0], steam_id, f.get('friend_since')))
     # 2. Get player summaries in batches of 100
     for i in range(0, len(friend_ids), 100):
         chunk = friend_ids[i:i+100]
@@ -793,7 +837,6 @@ def friends_who_own_game(steam_id, game_id):
         }
         for row in cur.fetchall()
     ]
-    print("Friends who own game:", friends)
     cur.close()
     conn.close()
     return jsonify(friends)
@@ -821,11 +864,16 @@ def get_user_info(steam_id):
     }
     url = 'https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/'
     response = requests.get(url, params=options)
+    print("Steam API status:", response.status_code)
+    print("Steam API response:", response.text)
     if response.status_code == 429:
         cur.close()
         conn.close()
         raise Exception("Steam is rate limiting us. Please try again later.")
-    response.raise_for_status()
+    if response.status_code != 200:
+        cur.close()
+        conn.close()
+        raise Exception(f"Steam API error: {response.status_code} {response.text}")
     data = response.json()
     players = data['response']['players']
     steam_data = players[0] if players else {"personaname": "", "avatarfull": ""}
