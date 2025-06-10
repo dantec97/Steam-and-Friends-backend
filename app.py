@@ -218,6 +218,26 @@ def get_user_games(steam_id):
     conn.close()
     return jsonify(games)
 
+@app.route("/api/users/<steam_id>/total_playtime", methods=["GET"])
+@jwt_required()
+def get_total_playtime(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COALESCE(SUM(ug.playtime_minutes), 0)
+        FROM users u
+        JOIN user_games ug ON u.id = ug.user_id
+        WHERE u.steam_id = %s
+    """, (steam_id,))
+    total_minutes = cur.fetchone()[0] or 0
+    cur.close()
+    conn.close()
+    return jsonify({"total_playtime_minutes": total_minutes})
+
+
 @app.route("/api/users/<steam_id>/friends", methods=["GET"])
 @jwt_required()
 def get_friends(steam_id):
@@ -249,6 +269,55 @@ def get_friends(steam_id):
     conn.close()
     return jsonify(friends)
 
+@app.route("/api/users/<steam_id>/friends_top_games", methods=["GET"])
+@jwt_required()
+def get_friends_top_games(steam_id):
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Get user_id
+    cur.execute("SELECT id FROM users WHERE steam_id = %s", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+    user_id = user_row[0]
+
+    # Get friends' steam_ids
+    cur.execute("SELECT friend_steam_id FROM friends WHERE user_id = %s", (user_id,))
+    friend_ids = [row[0] for row in cur.fetchall()]
+    if not friend_ids:
+        cur.close()
+        conn.close()
+        return jsonify([])
+
+    # Get top games among friends by total playtime
+    cur.execute("""
+        SELECT g.appid, g.name, g.image_url, SUM(ug.playtime_minutes) as total_playtime
+        FROM users u
+        JOIN user_games ug ON u.id = ug.user_id
+        JOIN games g ON ug.game_id = g.id
+        WHERE u.steam_id = ANY(%s)
+        GROUP BY g.appid, g.name, g.image_url
+        ORDER BY total_playtime DESC
+        LIMIT 5
+    """, (friend_ids,))
+    games = [
+        {
+            "appid": row[0],
+            "name": row[1],
+            "image_url": row[2],
+            "total_playtime": row[3]
+        }
+        for row in cur.fetchall()
+    ]
+    cur.close()
+    conn.close()
+    return jsonify(games)
 
 @app.route("/api/users/<steam_id>/friends_cached", methods=["GET"])
 @jwt_required()
