@@ -1,5 +1,5 @@
 import os
-from flask import Flask, jsonify, request, redirect, g, url_for
+from flask import Flask, jsonify, request, redirect, g, url_for, session
 from flask_cors import CORS
 import psycopg2
 from dotenv import load_dotenv
@@ -145,14 +145,16 @@ def add_user():
 
 @app.route("/api/users/<steam_id>/fetch_games", methods=["POST"])
 @jwt_required()
-def fetch_and_store_games(steam_id):
-    identity = get_jwt_identity()
-    if identity != steam_id:
-        return jsonify({"error": "Forbidden"}), 403
-    success, message = fetch_and_store_games_for_steam_id(steam_id)
-    if not success:
-        return jsonify({"error": message}), 404
-    return jsonify({"message": message})
+def fetch_games(steam_id):
+    # Call Steam API, update DB
+    update_games_info(steam_id)
+    return jsonify({"message": "Games synced successfully."}), 200
+
+@app.route("/api/users/<friend_steam_id>/fetch_games", methods=["POST"])
+@jwt_required()
+def fetch_friend_games(friend_steam_id):
+    update_games_info(friend_steam_id)
+    return jsonify({"message": "Friend's games synced successfully."}), 200
 
 @app.route("/api/users/<steam_id>/steam_raw", methods=["GET"])
 def get_steam_raw(steam_id):
@@ -175,49 +177,39 @@ def get_steam_raw(steam_id):
     
 @app.route("/api/users/<steam_id>/games", methods=["GET"])
 @jwt_required()
-def get_user_games(steam_id):
-    identity = get_jwt_identity()
-    if identity != steam_id:
-        # Check if identity is a friend of steam_id
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
-        user_row = cur.fetchone()
-        if not user_row:
-            cur.close()
-            conn.close()
-            return jsonify({"error": "User not found"}), 404
-        user_id = user_row[0]
-        cur.execute("SELECT 1 FROM friends WHERE user_id = %s AND friend_steam_id = %s;", (user_id, identity))
-        is_friend = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not is_friend:
-            return jsonify({"error": "Forbidden"}), 403
+def get_games(steam_id):
     conn = get_db_connection()
     cur = conn.cursor()
+    # Get user_id
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        return jsonify({"games": []})
+    user_id = user_row[0]
+    # Join user_games and games to get all games for this user
     cur.execute("""
-        SELECT g.id, g.appid, g.name, g.image_url, ug.playtime_minutes
-        FROM users u
-        JOIN user_games ug ON u.id = ug.user_id
+        SELECT g.appid, g.name, g.image_url, ug.playtime_minutes, g.id
+        FROM user_games ug
         JOIN games g ON ug.game_id = g.id
-        WHERE u.steam_id = %s
+        WHERE ug.user_id = %s
         ORDER BY ug.playtime_minutes DESC
-    """, (steam_id,))
+    """, (user_id,))
     games = [
         {
-            "id": row[0],
-            "appid": row[1],
-            "name": row[2],
-            "image_url": row[3],
-            "playtime_minutes": row[4]
+            "appid": row[0],
+            "name": row[1],
+            "image_url": row[2],
+            "playtime_minutes": row[3],
+            "id": row[4]
         }
         for row in cur.fetchall()
     ]
     cur.close()
     conn.close()
-    return jsonify(games)
-
+    return jsonify({"games": games})
+    
 @app.route("/api/users/<steam_id>/total_playtime", methods=["GET"])
 @jwt_required()
 def get_total_playtime(steam_id):
@@ -237,17 +229,18 @@ def get_total_playtime(steam_id):
     conn.close()
     return jsonify({"total_playtime_minutes": total_minutes})
 
-
 @app.route("/api/users/<steam_id>/friends", methods=["GET"])
 @jwt_required()
 def get_friends(steam_id):
-    # Do NOT check identity here
-    # Update friends info in your DB
-    update_friends_info(steam_id)
-
-    # Now get the friends from your DB (with names/avatars)
     conn = get_db_connection()
     cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        return jsonify({"friends": []})
+    user_id = user_row[0]
     cur.execute("""
         SELECT f.friend_steam_id, u.display_name, u.avatar_url, f.friend_since
         FROM friends f
@@ -261,13 +254,12 @@ def get_friends(steam_id):
             "steam_id": row[0],
             "display_name": row[1],
             "avatar_url": row[2],
-            "friend_since": row[3]
         }
         for row in cur.fetchall()
     ]
     cur.close()
     conn.close()
-    return jsonify(friends)
+    return jsonify({"friends": friends})
 
 @app.route("/api/users/<steam_id>/friends_top_games", methods=["GET"])
 @jwt_required()
@@ -322,34 +314,33 @@ def get_friends_top_games(steam_id):
 @app.route("/api/users/<steam_id>/friends_cached", methods=["GET"])
 @jwt_required()
 def get_friends_cached(steam_id):
-    identity = get_jwt_identity()
-    if identity != steam_id:
-        return jsonify({"error": "Forbidden"}), 403
-    """Return friends from the local DB only, no Steam API call."""
     conn = get_db_connection()
     cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        return jsonify({"friends": []})
+    user_id = user_row[0]
     cur.execute("""
         SELECT f.friend_steam_id, u.display_name, u.avatar_url, f.friend_since
         FROM friends f
         LEFT JOIN users u ON f.friend_steam_id = u.steam_id
-        JOIN users owner ON f.user_id = owner.id
-        WHERE owner.steam_id = %s
+        WHERE f.user_id = %s
         ORDER BY f.friend_since DESC
-    """, (steam_id,))
+    """, (user_id,))
     friends = [
         {
             "steam_id": row[0],
             "display_name": row[1],
             "avatar_url": row[2],
-            "friend_since": row[3]
         }
         for row in cur.fetchall()
     ]
     cur.close()
     conn.close()
-    return jsonify(friends)
-
-
+    return jsonify({"friends": friends})
 
 # @app.route("/api/users/<steam_id>/friends_list", methods=["GET"])
 # # this returns the friends list from the Steam API
@@ -801,9 +792,10 @@ def get_group_members(group_id):
     conn.close()
     return jsonify(members)
 
+
 def update_friends_info(steam_id):
     steam_api_key = os.getenv("STEAM_API_KEY")
-    # 1. Get friend list
+    # 1. Get friend list from Steam
     url = "http://api.steampowered.com/ISteamUser/GetFriendList/v1/"
     params = {"key": steam_api_key, "steamid": steam_id, "relationship": "friend"}
     response = requests.get(url, params=params)
@@ -824,7 +816,10 @@ def update_friends_info(steam_id):
         return
     owner_id = owner_row[0]
 
-    # Insert or update friend relationships
+    # Delete old friends for this user
+    cur.execute("DELETE FROM friends WHERE user_id = %s;", (owner_id,))
+
+    # Insert or update friend relationships and upsert friend info
     for f in friends:
         # Insert owner -> friend
         cur.execute("""
@@ -832,16 +827,8 @@ def update_friends_info(steam_id):
             VALUES (%s, %s, %s)
             ON CONFLICT (user_id, friend_steam_id) DO UPDATE SET friend_since = EXCLUDED.friend_since
         """, (owner_id, f['steamid'], f.get('friend_since')))
-        # Insert friend -> owner (symmetric)
-        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (f['steamid'],))
-        friend_row = cur.fetchone()
-        if friend_row:
-            cur.execute("""
-                INSERT INTO friends (user_id, friend_steam_id, friend_since)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id, friend_steam_id) DO UPDATE SET friend_since = EXCLUDED.friend_since
-            """, (friend_row[0], steam_id, f.get('friend_since')))
-    # 2. Get player summaries in batches of 100
+
+    # 2. Get player summaries in batches of 100 and upsert into users
     for i in range(0, len(friend_ids), 100):
         chunk = friend_ids[i:i+100]
         url = "http://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/"
@@ -849,7 +836,7 @@ def update_friends_info(steam_id):
         resp = requests.get(url, params=params)
         if resp.status_code != 200:
             print(f"Steam API error: {resp.status_code} {resp.text}")
-            continue  # or handle error as needed
+            continue
         try:
             players = resp.json().get("response", {}).get("players", [])
         except Exception as e:
@@ -860,7 +847,7 @@ def update_friends_info(steam_id):
                 INSERT INTO users (steam_id, display_name, avatar_url)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (steam_id) DO UPDATE SET display_name = EXCLUDED.display_name, avatar_url = EXCLUDED.avatar_url
-            """, (player['steamid'], player['personaname'], player['avatarfull']))
+            """, (player['steamid'], player.get('personaname', ''), player.get('avatarfull', '')))
     conn.commit()
     cur.close()
     conn.close()
@@ -972,6 +959,7 @@ def steam_login():
 
 @app.route("/auth/steam/authorize")
 def steam_authorize():
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
     openid_identity = request.args.get('openid.identity')
     match = steam_id_re.match(openid_identity)
     if not match:
@@ -1014,7 +1002,7 @@ def steam_authorize():
 
     # Redirect to frontend with all info as query params
     return redirect(
-        f"http://localhost:5173/steam-auth-success"
+        f"{FRONTEND_URL}/steam-auth-success"
         f"?steamid={steam_id}"
         f"&display_name={display_name}"
         f"&avatar_url={avatar_url}"
@@ -1042,3 +1030,81 @@ if __name__ == "__main__":
 
     #direct steam sign in link: http://127.0.0.1:5000/auth/steam
     #steam success: http://localhost:5173/steam-auth-success?steamid=76561198846382485&display_name=dantec97&avatar_url=https://avatars.steamstatic.com/3f47c3634c822270cbccf23f4cb4fcf2272e23d1_full.jpg
+@app.route("/api/users/<steam_id>/sync_friends", methods=["POST"])
+@jwt_required()
+def sync_friends(steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+    user_id = user_row[0]
+    cur.close()
+    conn.close()
+    update_friends_info(steam_id)
+    return jsonify({"message": "Friends synced successfully."}), 200
+
+def get_user_from_db(steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE steam_id = %s;", (steam_id,))
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    return user
+
+def create_user_in_db(steam_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO users (steam_id, created_at) VALUES (%s, %s) ON CONFLICT DO NOTHING;", (steam_id, datetime.datetime.utcnow()))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def update_games_info(steam_id):
+    STEAM_API_KEY = os.getenv("STEAM_API_KEY")
+    url = f"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={STEAM_API_KEY}&steamid={steam_id}&format=json&include_appinfo=1"
+    response = requests.get(url)
+    if response.status_code != 200:
+        raise Exception("Failed to fetch games from Steam API")
+    games_data = response.json().get("response", {}).get("games", [])
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Get user_id
+    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    user_row = cur.fetchone()
+    if not user_row:
+        cur.close()
+        conn.close()
+        raise Exception("User not found")
+    user_id = user_row[0]
+
+    # Delete user's old games from user_games
+    cur.execute("DELETE FROM user_games WHERE user_id = %s;", (user_id,))
+
+    for game in games_data:
+        # Insert game metadata if not exists
+        cur.execute(
+            "INSERT INTO games (appid, name) VALUES (%s, %s) ON CONFLICT (appid) DO NOTHING;",
+            (game["appid"], game["name"])
+        )
+        # Get game id
+        cur.execute("SELECT id FROM games WHERE appid = %s;", (game["appid"],))
+        game_row = cur.fetchone()
+        if not game_row:
+            continue
+        game_id = game_row[0]
+        # Insert user-game link
+        cur.execute(
+            "INSERT INTO user_games (user_id, game_id, playtime_minutes) VALUES (%s, %s, %s) "
+            "ON CONFLICT (user_id, game_id) DO UPDATE SET playtime_minutes = EXCLUDED.playtime_minutes;",
+            (user_id, game_id, game.get("playtime_forever", 0))
+        )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return True, f"Fetched and stored {len(games)} games for user {steam_id}."
