@@ -12,6 +12,10 @@ import urllib.request
 import json
 import datetime
 from datetime import timedelta
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+
 
 
 
@@ -20,10 +24,15 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[]
+)
+
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")  # Use a strong secret in production!
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 jwt = JWTManager(app)
-print("JWT_SECRET_KEY:", os.getenv("JWT_SECRET_KEY"))
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
@@ -145,6 +154,7 @@ def add_user():
 
 @app.route("/api/users/<steam_id>/fetch_games", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per day")
 def fetch_games(steam_id):
     # Call Steam API, update DB
     update_games_info(steam_id)
@@ -152,6 +162,7 @@ def fetch_games(steam_id):
 
 @app.route("/api/users/<friend_steam_id>/fetch_games", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per day")
 def fetch_friend_games(friend_steam_id):
     update_games_info(friend_steam_id)
     return jsonify({"message": "Friend's games synced successfully."}), 200
@@ -495,6 +506,7 @@ def get_group(group_id):
 
 @app.route("/api/sync_group_games", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per day")
 def sync_group_games():
     data = request.get_json()
     steam_ids = data.get("steam_ids")
@@ -1032,6 +1044,7 @@ if __name__ == "__main__":
     #steam success: http://localhost:5173/steam-auth-success?steamid=76561198846382485&display_name=dantec97&avatar_url=https://avatars.steamstatic.com/3f47c3634c822270cbccf23f4cb4fcf2272e23d1_full.jpg
 @app.route("/api/users/<steam_id>/sync_friends", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per day")
 def sync_friends(steam_id):
     conn = get_db_connection()
     cur = conn.cursor()
