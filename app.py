@@ -20,10 +20,10 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "super-secret-key")  # Use a strong secret in production!
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")  # Use a strong secret in production!
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 jwt = JWTManager(app)
-
+print("JWT_SECRET_KEY:", os.getenv("JWT_SECRET_KEY"))
 def get_db_connection():
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
@@ -1076,6 +1076,8 @@ def update_games_info(steam_id):
     cur = conn.cursor()
     # Get user_id
     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+    print("Steam API status:", response.status_code)
+
     user_row = cur.fetchone()
     if not user_row:
         cur.close()
@@ -1107,4 +1109,4 @@ def update_games_info(steam_id):
     conn.commit()
     cur.close()
     conn.close()
-    return True, f"Fetched and stored {len(games)} games for user {steam_id}."
+    return True, f"Fetched and stored {len(games_data)} games for user {steam_id}."
