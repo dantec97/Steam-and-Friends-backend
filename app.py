@@ -34,7 +34,8 @@ app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")  # Use a strong secre
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 jwt = JWTManager(app)
 def get_db_connection():
-    print("Connecting to DB:", os.getenv("DB_NAME")) 
+    # uncomment the line below to debug the connection
+    # print("Connecting to DB:", os.getenv("DB_NAME")) 
 
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
@@ -699,6 +700,32 @@ def get_group_shared_games(group_id):
 #     cur.close()
 #     conn.close()
 #     return jsonify(groups)
+
+@app.route("/api/users/<steam_id>/games/<int:game_id>/playtime", methods=["GET"])
+@jwt_required()
+def get_user_playtime_for_game(steam_id, game_id):
+    """
+    Return the playtime (in minutes) for a specific user and game.
+    Requires JWT for the user.
+    """
+    identity = get_jwt_identity()
+    if identity != steam_id:
+        return jsonify({"error": "Forbidden"}), 403
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT ug.playtime_minutes, g.name
+        FROM user_games ug
+        JOIN games g ON ug.game_id = g.id
+        JOIN users u ON ug.user_id = u.id
+        WHERE u.steam_id = %s AND g.id = %s
+    """, (steam_id, game_id))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return jsonify({"playtime_minutes": 0, "game_name": ""})
+    return jsonify({"playtime_minutes": row[0], "game_name": row[1]})
 
 @app.route("/api/users/<steam_id>/groups", methods=["GET"])
 @jwt_required()
