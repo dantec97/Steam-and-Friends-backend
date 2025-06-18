@@ -1,4 +1,4 @@
 venv
 .env
 SteamFetch.js
-
+.env.test
