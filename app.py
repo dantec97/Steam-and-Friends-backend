@@ -18,7 +18,7 @@ from flask_limiter.util import get_remote_address
 
 
 
-
+# comment out the line below for testing, remember to uncomment it when deploying!!!!
 load_dotenv()
 
 app = Flask(__name__)
@@ -34,6 +34,8 @@ app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")  # Use a strong secre
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 jwt = JWTManager(app)
 def get_db_connection():
+    print("Connecting to DB:", os.getenv("DB_NAME")) 
+
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
         database=os.getenv("DB_NAME"),
@@ -41,6 +43,8 @@ def get_db_connection():
         password=os.getenv("DB_PASSWORD"),
         port=os.getenv("DB_PORT")
     )
+
+
 
 @app.route("/api/hello")
 def hello():
@@ -119,9 +123,6 @@ def get_users():
     cur.close()
     conn.close()
     return jsonify(users)
-
-# if __name__ == "__main__":
-#     app.run(debug=True)
 
 
 @app.route("/api/users", methods=["POST"])
@@ -765,20 +766,6 @@ def get_groups_owned(steam_id):
     conn.close()
     return jsonify(groups)
 
-# @app.route("/api/groups/<int:group_id>/members", methods=["GET"])
-# def get_group_members(group_id):
-#     conn = get_db_connection()
-#     cur = conn.cursor()
-#     cur.execute("""
-#         SELECT u.steam_id, u.display_name
-#         FROM group_members gm
-#         JOIN users u ON gm.user_id = u.id
-#         WHERE gm.group_id = %s
-#     """, (group_id,))
-#     members = [{"steam_id": row[0], "display_name": row[1]} for row in cur.fetchall()]
-#     cur.close()
-#     conn.close()
-#     return jsonify(members)
 
 @app.route("/api/groups/<int:group_id>/members", methods=["GET"])
 @jwt_required()
@@ -1033,15 +1020,7 @@ def handle_error(e):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
-# if __name__ == "__main__":
-#     app.run(debug=True, threaded=True)
-    # might need: flask run --with-threads
 
-
-    # 76561198079997160 weezbud
-
-    #direct steam sign in link: http://127.0.0.1:5000/auth/steam
-    #steam success: http://localhost:5173/steam-auth-success?steamid=76561198846382485&display_name=dantec97&avatar_url=https://avatars.steamstatic.com/3f47c3634c822270cbccf23f4cb4fcf2272e23d1_full.jpg
 @app.route("/api/users/<steam_id>/sync_friends", methods=["POST"])
 @jwt_required()
 @limiter.limit("10 per day")
