@@ -148,7 +148,7 @@ It communicates with this backend via REST API.
 ## 👤 Author
 
 Dante Cancellieri  
-https://www.linkedin.com/in/dante-cancellieri/
+[LinkedIn](https://www.linkedin.com/in/dante-cancellieri/)
 
 ---
 
