@@ -935,13 +935,15 @@ def get_user_info(steam_id):
 
 @app.route("/auth/steam")
 def steam_login():
+    # Use environment variable for backend URL
+    BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:5000")
     params = {
         'openid.ns': "http://specs.openid.net/auth/2.0",
         'openid.identity': "http://specs.openid.net/auth/2.0/identifier_select",
         'openid.claimed_id': "http://specs.openid.net/auth/2.0/identifier_select",
         'openid.mode': 'checkid_setup',
-        'openid.return_to': 'http://127.0.0.1:5000/auth/steam/authorize',
-        'openid.realm': 'http://127.0.0.1:5000'
+        'openid.return_to': f'{BACKEND_URL}/auth/steam/authorize',
+        'openid.realm': BACKEND_URL
     }
     param_string = urllib.parse.urlencode(params)
     auth_url = steam_openid_url + "?" + param_string
