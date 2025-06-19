@@ -1004,7 +1004,7 @@ def steam_authorize():
             conn.close()
 
     token = create_access_token(identity=steam_id)
-    return redirect(f"{FRONTEND_URL}/steam_auth_success?token={token}&steam_id={steam_id}")
+    return redirect(f"{FRONTEND_URL}/steam-auth-success?token={token}&steam_id={steam_id}")
 
 @app.errorhandler(400)
 @app.errorhandler(401)
