@@ -952,40 +952,58 @@ def steam_login():
 @app.route("/auth/steam/authorize")
 def steam_authorize():
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
     openid_identity = request.args.get('openid.identity')
+    if not openid_identity:
+        app.logger.error("Missing openid.identity in callback")
+        return jsonify({"error": "Steam response missing identity"}), 400
+
     match = steam_id_re.match(openid_identity)
     if not match:
+        app.logger.error(f"Invalid openid.identity: {openid_identity}")
         return jsonify({"error": "Steam login failed"}), 400
+
     steam_id = match.group(1)
-    steam_data = get_user_info(steam_id)
+
+    try:
+        steam_data = get_user_info(steam_id)
+        if not steam_data:
+            raise ValueError("No data returned from Steam API")
+    except Exception as e:
+        app.logger.error(f"Failed to get user info: {str(e)}")
+        return jsonify({"error": "Steam user info failed"}), 500
+
     display_name = steam_data.get('personaname', '')
     avatar_url = steam_data.get('avatarfull', '')
 
-    # Upsert user in your DB
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
-    user = cur.fetchone()
-    if user:
-        cur.execute(
-            "UPDATE users SET display_name = %s, avatar_url = %s WHERE steam_id = %s;",
-            (display_name, avatar_url, steam_id)
-        )
-        user_id = user[0]
-    else:
-        cur.execute(
-            "INSERT INTO users (steam_id, display_name, avatar_url) VALUES (%s, %s, %s) RETURNING id;",
-            (steam_id, display_name, avatar_url)
-        )
-        user_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
+        user = cur.fetchone()
+        if user:
+            cur.execute(
+                "UPDATE users SET display_name = %s, avatar_url = %s WHERE steam_id = %s;",
+                (display_name, avatar_url, steam_id)
+            )
+            user_id = user[0]
+        else:
+            cur.execute(
+                "INSERT INTO users (steam_id, display_name, avatar_url) VALUES (%s, %s, %s) RETURNING id;",
+                (steam_id, display_name, avatar_url)
+            )
+            user_id = cur.fetchone()[0]
+        conn.commit()
+    except Exception as e:
+        app.logger.error(f"DB error: {str(e)}")
+        return jsonify({"error": "Database error"}), 500
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
-    # Generate JWT token for the user
     token = create_access_token(identity=steam_id)
-
-    # Redirect to frontend with token and steam_id
     return redirect(f"{FRONTEND_URL}/steam_auth_success?token={token}&steam_id={steam_id}")
 
 @app.errorhandler(400)
