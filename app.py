@@ -936,7 +936,7 @@ def get_user_info(steam_id):
 @app.route("/auth/steam")
 def steam_login():
     # Use environment variable for backend URL
-    BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:5000")
+    BACKEND_URL = os.getenv("BACKEND_URL")
     params = {
         'openid.ns': "http://specs.openid.net/auth/2.0",
         'openid.identity': "http://specs.openid.net/auth/2.0/identifier_select",
@@ -982,24 +982,11 @@ def steam_authorize():
     cur.close()
     conn.close()
 
-    # Create JWT
-    access_token = create_access_token(
-    identity=steam_id,
-    additional_claims={
-        "user_id": user_id,
-        "display_name": display_name,
-        "avatar_url": avatar_url
-    }
-)
+    # Generate JWT token for the user
+    token = create_access_token(identity=steam_id)
 
-    # Redirect to frontend with all info as query params
-    return redirect(
-        f"{FRONTEND_URL}/steam-auth-success"
-        f"?steamid={steam_id}"
-        f"&display_name={display_name}"
-        f"&avatar_url={avatar_url}"
-        f"&token={access_token}"
-    )
+    # Redirect to frontend with token and steam_id
+    return redirect(f"{FRONTEND_URL}/steam_auth_success?token={token}&steam_id={steam_id}")
 
 @app.errorhandler(400)
 @app.errorhandler(401)
