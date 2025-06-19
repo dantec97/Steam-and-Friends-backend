@@ -355,18 +355,7 @@ def get_friends_cached(steam_id):
     conn.close()
     return jsonify({"friends": friends})
 
-# @app.route("/api/users/<steam_id>/friends_list", methods=["GET"])
-# # this returns the friends list from the Steam API
-# def get_friends_list(steam_id):
-#     steam_api_key = os.getenv("STEAM_API_KEY")
-#     url = "http://api.steampowered.com/ISteamUser/GetFriendList/v1/"
-#     params = {
-#         "key": steam_api_key,
-#         "steamid": steam_id,
-#         "relationship": "friend"
-#     }
-#     response = requests.get(url, params=params)
-#     return jsonify(response.json())
+
 
 @app.route("/api/users/<steam_id>/summary", methods=["GET"])
 def get_player_summary(steam_id):
@@ -674,32 +663,7 @@ def get_group_shared_games(group_id):
     conn.close()
     return jsonify(games)
 
-# @app.route("/api/users/<steam_id>/groups", methods=["GET"])
-# #GET ALL GROUPS USER IS A MEMBER OF
-# def get_user_groups(steam_id):
-#     conn = get_db_connection()
-#     cur = conn.cursor()
-#     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
-#     user = cur.fetchone()
-#     if not user:
-#         cur.close()
-#         conn.close()
-#         return jsonify({"error": "User not found"}), 404
-#     user_id = user[0]
-#     cur.execute("""
-#         SELECT g.id, g.name, g.owner_id
-#         FROM groups g
-#         JOIN group_members gm ON g.id = gm.group_id
-#         WHERE gm.user_id = %s
-#         ORDER BY g.name
-#     """, (user_id,))
-#     groups = [
-#         {"group_id": row[0], "name": row[1], "owner_id": row[2]}
-#         for row in cur.fetchall()
-#     ]
-#     cur.close()
-#     conn.close()
-#     return jsonify(groups)
+
 
 @app.route("/api/users/<steam_id>/games/<int:game_id>/playtime", methods=["GET"])
 @jwt_required()
