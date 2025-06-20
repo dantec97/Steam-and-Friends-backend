@@ -46,6 +46,9 @@ def get_db_connection():
     )
 
 
+@app.route("/")
+def index():
+    return "Steam and Friends Backend is running!"
 
 @app.route("/api/hello")
 def hello():
