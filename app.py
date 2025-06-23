@@ -1070,22 +1070,20 @@ def update_games_info(steam_id):
     STEAM_API_KEY = os.getenv("STEAM_API_KEY")
     url = f"http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key={STEAM_API_KEY}&steamid={steam_id}&format=json&include_appinfo=1"
     response = requests.get(url)
+    print("Steam API status:", response.status_code)
+    print("Steam API response:", response.text)
     if response.status_code != 200:
         raise Exception("Failed to fetch games from Steam API")
     games_data = response.json().get("response", {}).get("games", [])
+
+    if not isinstance(games_data, list) or not games_data:
+        # No games found or profile is private
+        return []
 
     conn = get_db_connection()
     cur = conn.cursor()
     # Get user_id
     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
-    print("Steam API status:", response.status_code)
-    print("Steam API response:", response.text)  # Add this line
-    if not games_data or "response" not in games_data:
-        # Handle error or return empty list
-        return []
-    if "games" not in games_data["response"]:
-        # User has no games or profile is private
-        return []
     user_row = cur.fetchone()
     if not user_row:
         cur.close()
@@ -1097,18 +1095,15 @@ def update_games_info(steam_id):
     cur.execute("DELETE FROM user_games WHERE user_id = %s;", (user_id,))
 
     for game in games_data:
-        # Insert game metadata if not exists
         cur.execute(
             "INSERT INTO games (appid, name) VALUES (%s, %s) ON CONFLICT (appid) DO NOTHING;",
             (game["appid"], game["name"])
         )
-        # Get game id
         cur.execute("SELECT id FROM games WHERE appid = %s;", (game["appid"],))
         game_row = cur.fetchone()
         if not game_row:
             continue
         game_id = game_row[0]
-        # Insert user-game link
         cur.execute(
             "INSERT INTO user_games (user_id, game_id, playtime_minutes) VALUES (%s, %s, %s) "
             "ON CONFLICT (user_id, game_id) DO UPDATE SET playtime_minutes = EXCLUDED.playtime_minutes;",
