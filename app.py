@@ -163,10 +163,11 @@ def add_user():
 @jwt_required()
 @limiter.limit("10 per day")
 def fetch_games(steam_id):
-    # Call Steam API, update DB
-    update_games_info(steam_id)
-    return jsonify({"message": "Games synced successfully."}), 200
-
+    try:
+        update_games_info(steam_id)
+        return jsonify({"message": "Games synced successfully."}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route("/api/users/<friend_steam_id>/fetch_games", methods=["POST"])
 @jwt_required()
 @limiter.limit("10 per day")
@@ -1072,32 +1073,41 @@ def update_games_info(steam_id):
     response = requests.get(url)
     print("Steam API status:", response.status_code)
     print("Steam API response:", response.text)
-    if response.status_code != 200:
-        raise Exception("Failed to fetch games from Steam API")
-    games_data = response.json().get("response", {}).get("games", [])
 
+    # Handle rate limit and errors
+    if response.status_code == 429:
+        print("Steam API rate limited. Skipping DB update.")
+        raise Exception("Steam API rate limited. Try again later.")
+    if response.status_code != 200:
+        print("Steam API error. Skipping DB update.")
+        raise Exception("Failed to fetch games from Steam API")
+
+    games_data = response.json().get("response", {}).get("games", [])
     if not isinstance(games_data, list) or not games_data:
-        # No games found or profile is private
-        return []
+        print("No games found or profile is private. Skipping DB update.")
+        return False, "No games found or profile is private."
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # Get user_id
     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
     user_row = cur.fetchone()
     if not user_row:
         cur.close()
         conn.close()
+        print("User not found. Skipping DB update.")
         raise Exception("User not found")
     user_id = user_row[0]
 
-    # Delete user's old games from user_games
+    # Only now, after all checks, delete and insert
+    print(f"Deleting old games for user {steam_id}")
     cur.execute("DELETE FROM user_games WHERE user_id = %s;", (user_id,))
 
+    print(f"Inserting {len(games_data)} games for user {steam_id}")
     for game in games_data:
+        image_url = f"http://media.steampowered.com/steamcommunity/public/images/apps/{game['appid']}/{game.get('img_icon_url', '')}.jpg"
         cur.execute(
-            "INSERT INTO games (appid, name) VALUES (%s, %s) ON CONFLICT (appid) DO NOTHING;",
-            (game["appid"], game["name"])
+            "INSERT INTO games (appid, name, image_url) VALUES (%s, %s, %s) ON CONFLICT (appid) DO NOTHING;",
+            (game["appid"], game["name"], image_url)
         )
         cur.execute("SELECT id FROM games WHERE appid = %s;", (game["appid"],))
         game_row = cur.fetchone()
@@ -1110,6 +1120,7 @@ def update_games_info(steam_id):
             (user_id, game_id, game.get("playtime_forever", 0))
         )
     conn.commit()
+    print(f"Committed {len(games_data)} games for user {steam_id}")
     cur.close()
     conn.close()
     return True, f"Fetched and stored {len(games_data)} games for user {steam_id}."
