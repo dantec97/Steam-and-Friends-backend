@@ -1,6 +1,6 @@
 import os
 from flask import Flask, jsonify, request, redirect, g, url_for, session
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import psycopg2
 from dotenv import load_dotenv
 import requests
@@ -916,7 +916,7 @@ def get_user_info(steam_id):
     url = 'https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/'
     response = requests.get(url, params=options)
     print("Steam API status:", response.status_code)
-    print("Steam API response:", response.text)
+    print("Steam API response:", response.text)  # Add this line
     if response.status_code == 429:
         cur.close()
         conn.close()
@@ -1020,6 +1020,13 @@ def handle_error(e):
     code = getattr(e, 'code', 500)
     return jsonify({"error": str(e)}), code
 
+@app.errorhandler(Exception)
+@cross_origin(origins=["https://steam-and-friends-frontend.onrender.com"])
+def handle_exception(e):
+    response = jsonify(error=str(e))
+    response.status_code = 500
+    return response
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
@@ -1072,7 +1079,13 @@ def update_games_info(steam_id):
     # Get user_id
     cur.execute("SELECT id FROM users WHERE steam_id = %s;", (steam_id,))
     print("Steam API status:", response.status_code)
-
+    print("Steam API response:", response.text)  # Add this line
+    if not games_data or "response" not in games_data:
+        # Handle error or return empty list
+        return []
+    if "games" not in games_data["response"]:
+        # User has no games or profile is private
+        return []
     user_row = cur.fetchone()
     if not user_row:
         cur.close()
