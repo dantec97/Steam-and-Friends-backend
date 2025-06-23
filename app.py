@@ -21,8 +21,10 @@ from flask_limiter.util import get_remote_address
 # comment out the line below for testing, remember to uncomment it when deploying!!!!
 load_dotenv()
 
+# app = Flask(__name__)
+# CORS(app)
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://steam-and-friends-frontend.onrender.com"])
 
 limiter = Limiter(
     get_remote_address,
