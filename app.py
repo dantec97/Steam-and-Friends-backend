@@ -1104,7 +1104,7 @@ def update_games_info(steam_id):
 
     print(f"Inserting {len(games_data)} games for user {steam_id}")
     for game in games_data:
-        image_url = f"http://media.steampowered.com/steamcommunity/public/images/apps/{game['appid']}/{game.get('img_icon_url', '')}.jpg"
+        image_url = f"https://media.steampowered.com/steamcommunity/public/images/apps/{game['appid']}/{game.get('img_icon_url', '')}.jpg"
         cur.execute(
             "INSERT INTO games (appid, name, image_url) VALUES (%s, %s, %s) ON CONFLICT (appid) DO NOTHING;",
             (game["appid"], game["name"], image_url)
